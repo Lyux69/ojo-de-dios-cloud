@@ -7339,6 +7339,9 @@ export default defineConfig(({ mode }) => {
   }
   const env = { ...process.env };
   return {
+    // Relative assets make the build work both on GitHub Pages project URLs
+    // (https://user.github.io/repo/) and from USB/demo mirrors.
+    base: env.VITE_PUBLIC_BASE || './',
     plugins: [
       cesium(),
       openSkyProxy(),
@@ -7373,6 +7376,7 @@ export default defineConfig(({ mode }) => {
     define: {
       'import.meta.env.GOOGLE_MAPS_API_KEY': JSON.stringify(env.GOOGLE_MAPS_API_KEY),
       'import.meta.env.CESIUM_ION_TOKEN': JSON.stringify(env.CESIUM_ION_TOKEN),
+      'import.meta.env.VITE_API_BASE_URL': JSON.stringify(env.VITE_API_BASE_URL || ''),
     },
     build: {
       // The Cesium engine bundle is inherently large; raise the warning ceiling

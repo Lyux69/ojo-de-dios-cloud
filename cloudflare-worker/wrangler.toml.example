@@ -1,0 +1,11 @@
+name = "ojo-de-dios-api"
+main = "ojo-worker.js"
+compatibility_date = "2026-08-29"
+
+# Copy this file to wrangler.toml before deploying.
+# Do NOT put real secrets here. Use:
+#   wrangler secret put USB_ACCESS_TOKEN
+#   wrangler secret put TOMTOM_API_KEY
+
+[vars]
+TOMTOM_DAILY_BUDGET = "40000"

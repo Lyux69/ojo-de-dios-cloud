@@ -608,6 +608,67 @@ function parseRoads(overpassData) {
   return roads;
 }
 
+/**
+ * Luis/local fallback: when public Overpass mirrors fail but a TomTom key is
+ * configured, use TomTom flow polylines themselves as drawable traffic roads.
+ * This is less cartographically complete than OSM roads, but it makes the
+ * "I want cars" layer work from the live traffic provider instead of being
+ * blocked by flaky/free Overpass mirrors.
+ * @param {Array<{coords:number[][], trafficLevel:number, roadType:string, closure:boolean}>} segments
+ * @returns {Array<{coords:number[][], type:string, oneway:number, waypoints:Cesium.Cartesian3[], segmentDist:number[], flow:{level:number, closure:boolean}}>} 
+ */
+function roadsFromFlowSegments(segments) {
+  if (!Array.isArray(segments)) return [];
+  const roads = [];
+  for (const seg of segments) {
+    const rawCoords = Array.isArray(seg?.coords) ? seg.coords : [];
+    if (rawCoords.length < 2) continue;
+    const step = rawCoords.length > MAX_WAYPOINTS_PER_ROAD
+      ? Math.ceil(rawCoords.length / MAX_WAYPOINTS_PER_ROAD)
+      : 1;
+    const coords = [];
+    for (let i = 0; i < rawCoords.length; i += step) coords.push(rawCoords[i]);
+    const last = rawCoords[rawCoords.length - 1];
+    const tail = coords[coords.length - 1];
+    if (!tail || tail[0] !== last[0] || tail[1] !== last[1]) coords.push(last);
+    if (coords.length < 2) continue;
+
+    let baseHeight = 0;
+    const firstCoord = coords[0];
+    if (_viewer?.scene?.sampleHeightSupported && firstCoord) {
+      const carto = Cesium.Cartographic.fromDegrees(firstCoord[0], firstCoord[1]);
+      const sampled = _viewer.scene.sampleHeight(carto);
+      if (Number.isFinite(sampled)) baseHeight = sampled;
+    }
+    const waypoints = coords.map(([lng, lat]) => Cesium.Cartesian3.fromDegrees(lng, lat, baseHeight + DOT_HEIGHT_OFFSET));
+    const segmentDist = [];
+    for (let i = 0; i < waypoints.length - 1; i++) {
+      segmentDist.push(Cesium.Cartesian3.distance(waypoints[i], waypoints[i + 1]));
+    }
+    roads.push({
+      coords,
+      type: tomTomRoadTypeToOsmClass(seg.roadType),
+      oneway: 0,
+      waypoints,
+      segmentDist,
+      flow: { level: seg.trafficLevel, closure: seg.closure === true },
+    });
+  }
+  return roads;
+}
+
+/** Map TomTom's loose road_type values onto this layer's OSM speed/density keys. */
+function tomTomRoadTypeToOsmClass(value) {
+  const v = String(value || '').toLowerCase();
+  if (v.includes('motorway') || v.includes('freeway')) return 'motorway';
+  if (v.includes('trunk')) return 'trunk';
+  if (v.includes('primary') || v.includes('major')) return 'primary';
+  if (v.includes('secondary')) return 'secondary';
+  if (v.includes('tertiary')) return 'tertiary';
+  if (v.includes('residential') || v.includes('local') || v.includes('street')) return 'residential';
+  return 'primary';
+}
+
 // ─── Road Length Estimation ────────────────────────────────
 
 /**
@@ -2060,9 +2121,10 @@ async function loadRoadsForBounds(bounds, altitude, trace = null) {
   _lastBounds = clamped;
   _lastViewCenter = getBoundsCenter(clamped);
   let renderedSomething = false;
+  let cache = null;
 
   try {
-    let cache = _tileCache.get(cacheKey);
+    cache = _tileCache.get(cacheKey);
     if (!cache) {
       // LRU eviction: drop the oldest entry when cache exceeds the cap
       if (_tileCache.size >= TILE_CACHE_MAX_ENTRIES) {
@@ -2130,6 +2192,28 @@ async function loadRoadsForBounds(bounds, altitude, trace = null) {
   } catch (e) {
     if (e?.name === 'AbortError') return;
     console.warn('[Data:Traffic] Fetch error:', e);
+
+    // Luis/local fallback: if free Overpass road geometry is down but TomTom is
+    // working, draw live TomTom flow polylines directly so the user still sees
+    // cars/traffic instead of a permanent LOADING state.
+    try {
+      await ensureFlowStatus();
+      if (_liveMode && _enabled && generation === _loadGeneration) {
+        const segments = await fetchFlowForBounds(clamped, { signal: _activeFetchAbort?.signal });
+        const fallbackRoads = roadsFromFlowSegments(segments);
+        if (fallbackRoads.length > 0 && generation === _loadGeneration) {
+          if (!cache.full) cache.full = fallbackRoads;
+          renderedSomething = await applyFlowThenRender(
+            fallbackRoads, clamped, generation, altitude, 'TomTom fallback', trace
+          );
+          console.log(`[Data:Traffic] TomTom fallback rendered ${fallbackRoads.length} flow roads`);
+        }
+      }
+    } catch (fallbackError) {
+      if (fallbackError?.name !== 'AbortError') {
+        console.warn('[Data:Traffic] TomTom fallback failed:', fallbackError?.message || fallbackError);
+      }
+    }
   } finally {
     if (generation === _loadGeneration) {
       _fetching = false;

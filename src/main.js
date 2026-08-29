@@ -1,3 +1,4 @@
+import './cloudApiBase.js';
 import * as Cesium from 'cesium';
 import { StyleManager } from './ui.js';
 import { flyToAustin } from './camera.js';
@@ -79,15 +80,20 @@ async function init() {
       Cesium.Ion.defaultAccessToken = cesiumToken;
     }
 
-    // Set Google Maps API key for 3D Tiles
+    // Set Google Maps API key for 3D Tiles when present.
+    // Luis/free mode: if no Google key is configured, do NOT abort the app.
+    // The app will start with the free OSM/Re:Earth globe stack instead of
+    // Google Photorealistic 3D Tiles.
     const googleApiKey = import.meta.env.GOOGLE_MAPS_API_KEY;
-    if (!googleApiKey) {
-      throw new Error('GOOGLE_MAPS_API_KEY not found. Set it as an environment variable.');
+    if (googleApiKey) {
+      Cesium.GoogleMaps.defaultApiKey = googleApiKey;
+      // Expose API key globally for geocoding in locations.js
+      window.__GOOGLE_MAPS_API_KEY__ = googleApiKey;
+    } else {
+      console.warn('[Init] GOOGLE_MAPS_API_KEY not set; starting in free OSM fallback mode.');
+      loaderStatus.textContent = 'No Google key configured; starting free OSM mode...';
+      window.__GOOGLE_MAPS_API_KEY__ = '';
     }
-    Cesium.GoogleMaps.defaultApiKey = googleApiKey;
-
-    // Expose API key globally for geocoding in locations.js
-    window.__GOOGLE_MAPS_API_KEY__ = googleApiKey;
 
     // Create the Cesium viewer with minimal chrome
     const viewer = new Cesium.Viewer('cesiumContainer', {
@@ -153,9 +159,9 @@ async function init() {
     viewer.scene.skyAtmosphere.saturationShift = -0.12;
     viewer.scene.skyAtmosphere.brightnessShift = -0.08;
 
-    loaderStatus.textContent = 'Loading Google 3D Tiles...';
+    loaderStatus.textContent = googleApiKey ? 'Loading Google 3D Tiles...' : 'Loading free OSM globe...';
     let tileset = null;
-    try {
+    if (googleApiKey) try {
       // Load Google Photorealistic 3D Tiles
       tileset = await Cesium.createGooglePhotorealistic3DTileset({
         onlyUsingWithGoogleGeocoder: true,
